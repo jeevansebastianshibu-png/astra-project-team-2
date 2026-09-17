@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hack the Detector — Phishing URL Detector (standalone)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1420; --panel: #161d2e; --border: #263048;
+    --text: #e8ecf4; --muted: #8b96ab;
+    --green: #3ecf8e; --red: #ef5b5b; --amber: #f0b429;
+    --accent: #5b8def;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 48px 20px;
+  }
+  .wrap { width: 100%; max-width: 640px; }
+  h1 { font-size: 1.6rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 28px; font-size: 0.95rem; }
+  .badge {
+    display: inline-block; font-size: 0.7rem; letter-spacing: 0.06em;
+    color: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+    padding: 2px 10px; margin-bottom: 14px; text-transform: uppercase;
+  }
+  .search-row { display: flex; gap: 10px; }
+  input[type=text] {
+    flex: 1; background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); padding: 14px 16px; border-radius: 10px; font-size: 1rem;
+    outline: none; transition: border-color .15s;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  button {
+    background: var(--accent); color: white; border: none; border-radius: 10px;
+    padding: 0 22px; font-size: 1rem; font-weight: 600; cursor: pointer;
+    transition: opacity .15s;
+  }
+  button:hover { opacity: 0.88; }
+  .examples { margin-top: 10px; font-size: 0.82rem; color: var(--muted); }
+  .examples span { cursor: pointer; text-decoration: underline; margin-right: 14px; }
+  #result { margin-top: 28px; display: none; }
+  .verdict-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px 24px; margin-bottom: 16px;
+  }
+  .verdict-title { font-size: 1.3rem; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.legit { background: var(--green); }
+  .dot.phish { background: var(--red); }
+  .bar-track { background: #1e2740; border-radius: 999px; height: 10px; margin-top: 16px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 999px; transition: width .4s ease; }
+  .bar-label { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--muted); margin-top: 6px; }
+  .signals { display: flex; flex-direction: column; gap: 8px; }
+  .signal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 16px; display: flex; align-items: flex-start; gap: 12px; font-size: 0.88rem;
+  }
+  .signal .mark { font-weight: 700; width: 18px; flex-shrink: 0; text-align: center; }
+  .signal.flagged .mark { color: var(--red); }
+  .signal.clear .mark { color: var(--green); }
+  .signal .name { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+  .footer-note {
+    margin-top: 32px; font-size: 0.78rem; color: var(--muted); line-height: 1.5;
+    border-top: 1px solid var(--border); padding-top: 16px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="badge">Hack the Detector · Standalone Demo</div>
+  <h1>Phishing URL Detector</h1>
+  <div class="subtitle">Paste any URL. Runs entirely in this page — no server, no network calls.</div>
+
+  <div class="search-row">
+    <input type="text" id="urlInput" placeholder="https://paypal-secure.login-verify.com/signin" autocomplete="off">
+    <button onclick="analyze()">Analyze</button>
+  </div>
+  <div class="examples">
+    Try:
+    <span onclick="fillAndRun('http://192.168.4.19/paypal-update/secure-login.php')">an IP-based login page</span>
+    <span onclick="fillAndRun('https://www.wikipedia.org')">a real site</span>
+    <span onclick="fillAndRun('http://bit.ly/3xJf9Q')">a shortened link</span>
+    <span onclick="fillAndRun('http://secure-paypal-update.com-verify.info/login')">a hyphenated fake</span>
+  </div>
+
+  <div id="result">
+    <div class="verdict-card">
+      <div class="verdict-title"><div class="dot" id="verdictDot"></div><span id="verdictText"></span></div>
+      <div class="bar-track"><div class="bar-fill" id="barFill"></div></div>
+      <div class="bar-label"><span>Legitimate</span><span id="probLabel"></span><span>Phishing</span></div>
+    </div>
+    <div class="signals" id="signals"></div>
+  </div>
+
+  <div class="footer-note">
+    Standalone port of the lexical model (logistic-regression re-fit of the
+    same 8 URL-text features, trained on the UCI Phishing Websites dataset,
+    ~69.5% test accuracy). The project's actual live demo (Flask + Random
+    Forest, ~73% accuracy) is at <code>src/app.py</code>; this file exists so
+    the demo runs with nothing installed.
+  </div>
+</div>
+
+<script>
+// ---- Lexical feature extraction (ports src/lexical_features.py) ----
+const SHORTENERS = /bit\.ly|goo\.gl|shorte\.st|go2l\.ink|x\.co|ow\.ly|t\.co|tinyurl|tr\.im|is\.gd|cli\.gs|yfrog\.com|migre\.me|ff\.im|tiny\.cc|url4\.eu|twit\.ac|su\.pr|twurl\.nl|snipurl\.com|short\.to|budurl\.com|ping\.fm|post\.ly|just\.as|bkite\.com|snipr\.com|fic\.kr|loopt\.us|doiop\.com|short\.ie|kl\.am|wp\.me|rubyurl\.com|om\.ly|to\.ly|bit\.do|lnkd\.in|db\.tt|qr\.ae|adf\.ly|cutt\.ly|v\.gd|soo\.gd|s2r\.co/i;
+const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+
+function ensureScheme(url) { return url.includes('://') ? url.trim() : 'http://' + url.trim(); }
+function hostOf(url) { try { return new URL(ensureScheme(url)).hostname || ''; } catch { return ''; } }
+
+function having_IP_Address(url) {
+  const host = hostOf(url);
+  return (IPV4_RE.test(host) || host.includes(':')) ? -1 : 1;
+}
+function URL_Length(url) {
+  const n = url.trim().length;
+  if (n < 54) return 1;
+  if (n <= 75) return 0;
+  return -1;
+}
+function Shortining_Service(url) { return SHORTENERS.test(url) ? -1 : 1; }
+function having_At_Symbol(url) { return url.includes('@') ? -1 : 1; }
+function double_slash_redirecting(url) {
+  const schemeEnd = url.indexOf('://');
+  const searchFrom = schemeEnd !== -1 ? schemeEnd + 3 : 0;
+  return url.indexOf('//', searchFrom) !== -1 ? -1 : 1;
+}
+function Prefix_Suffix(url) { return hostOf(url).includes('-') ? -1 : 1; }
+function having_Sub_Domain(url) {
+  let host = hostOf(url);
+  if (IPV4_RE.test(host)) return 1;
+  if (host.startsWith('www.')) host = host.slice(4);
+  const parts = host.split('.').filter(Boolean);
+  const dotCount = Math.max(parts.length - 2, 0);
+  if (dotCount <= 1) return 1;
+  if (dotCount === 2) return 0;
+  return -1;
+}
+function HTTPS_token(url) { return hostOf(url).toLowerCase().includes('https') ? -1 : 1; }
+
+const EXTRACTORS = {
+  having_IP_Address, URL_Length, Shortining_Service, having_At_Symbol,
+  double_slash_redirecting, Prefix_Suffix, having_Sub_Domain, HTTPS_token,
+};
+const EXPLANATIONS = {
+  having_IP_Address: "The domain is a raw IP address instead of a name.",
+  URL_Length: "The URL is unusually long, often used to hide the real destination.",
+  Shortining_Service: "The URL uses a link-shortening service, hiding the real domain.",
+  having_At_Symbol: "The URL contains an '@' symbol, a classic redirect trick.",
+  double_slash_redirecting: "A '//' appears deep in the path, which can silently redirect.",
+  Prefix_Suffix: "The domain has a hyphen stitched in, often mimicking a real brand.",
+  having_Sub_Domain: "The URL has an unusually high number of sub-domains.",
+  HTTPS_token: "The literal word 'https' appears inside the domain itself, not as the protocol.",
+};
+
+// ---- Logistic-regression weights, fit on the UCI Phishing Websites dataset ----
+// (re-fit of the same 8 lexical columns the Flask app's Random Forest uses;
+//  positive weight pushes toward "legitimate")
+const COEF = {
+  having_IP_Address: 0.3457, URL_Length: 0.1407, Shortining_Service: -0.5862,
+  having_At_Symbol: 0.2297, double_slash_redirecting: 0.3425, Prefix_Suffix: 3.3325,
+  having_Sub_Domain: 0.8697, HTTPS_token: -0.0406,
+};
+const INTERCEPT = 3.28108;
+
+function predict(url) {
+  const features = {};
+  for (const name in EXTRACTORS) features[name] = EXTRACTORS[name](url);
+  let z = INTERCEPT;
+  for (const name in COEF) z += COEF[name] * features[name];
+  const probLegit = 1 / (1 + Math.exp(-z));
+  return { features, phishingProbability: 1 - probLegit };
+}
+
+function fillAndRun(url) { document.getElementById('urlInput').value = url; analyze(); }
+document.getElementById('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') analyze(); });
+
+function analyze() {
+  const url = document.getElementById('urlInput').value.trim();
+  if (!url) return;
+  const { features, phishingProbability } = predict(url);
+  const isPhishing = phishingProbability >= 0.5;
+
+  const dot = document.getElementById('verdictDot');
+  const text = document.getElementById('verdictText');
+  dot.className = 'dot ' + (isPhishing ? 'phish' : 'legit');
+  text.textContent = isPhishing ? 'Likely phishing' : 'Likely legitimate';
+  text.style.color = isPhishing ? 'var(--red)' : 'var(--green)';
+
+  const pct = Math.round(phishingProbability * 100);
+  const barFill = document.getElementById('barFill');
+  barFill.style.width = pct + '%';
+  barFill.style.background = isPhishing ? 'var(--red)' : 'var(--green)';
+  document.getElementById('probLabel').textContent = pct + '% phishing probability';
+
+  const signalsEl = document.getElementById('signals');
+  signalsEl.innerHTML = '';
+  for (const name in features) {
+    const value = features[name];
+    const flagged = value === -1;
+    const div = document.createElement('div');
+    div.className = 'signal ' + (flagged ? 'flagged' : 'clear');
+    div.innerHTML = `<div class="mark">${flagged ? '✕' : '✓'}</div>
+      <div><div class="name">${name.replace(/_/g, ' ')}</div>${EXPLANATIONS[name]}</div>`;
+    signalsEl.appendChild(div);
+  }
+  document.getElementById('result').style.display = 'block';
+}
+</script>
+</body>
+</html>
